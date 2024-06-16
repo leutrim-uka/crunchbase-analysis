@@ -16,7 +16,7 @@ class TopicModelingPipeline:
         self.config = config
         self.checkpoint_dir = config['checkpoint']['dir']
         ensure_directory_exists(self.checkpoint_dir)
-        self.embedding_model = SentenceTransformer("BAAI/bge-small-en")
+        self.embedding_model = SentenceTransformer(config['model']['embedding_model'])
         self.umap_model = UMAP(**config['model']['umap'])
         self.hdbscan_model = HDBSCAN(**config['model']['hdbscan'])
         self.llm = self._load_llm()
@@ -45,31 +45,53 @@ Based on the above information, can you generate one to three classes of typical
 A:
 """
 
-    def load_data(self):
+    def load_data(self, pre_embedded=False):
         data_dir = self.config['data']['dir']
-        embeddings_path = os.path.join(data_dir, self.config['data']['embeddings'])
         descriptions_csv_path = os.path.join(data_dir, self.config['data']['descriptions'])
-        embeddings = np.load(embeddings_path)
         df = pd.read_csv(descriptions_csv_path)
         docs = df['description'].dropna().astype(str).tolist()
-        assert len(docs) == len(embeddings), "Number of documents must match the number of embeddings."
-        return docs, embeddings
+        return docs
 
-    def split_batches(self, docs, embeddings):
+    def split_batches(self, docs):
         doc_chunks = [docs[i:i + self.batch_size] for i in range(0, len(docs), self.batch_size)]
-        embedding_chunks = [embeddings[i:i + self.batch_size] for i in range(0, len(embeddings), self.batch_size)]
-        return doc_chunks, embedding_chunks
+        return doc_chunks
 
-    def process_batches(self, doc_chunks, embedding_chunks):
+    def calculate_embeddings(self, docs):
+        embeddings = self.embedding_model.encode(docs, show_progress_bar=True)
+        try:
+            # Ensure the directory exists
+            dir_path = self.config['data']['dir']
+            if not os.path.exists(dir_path):
+                os.makedirs(dir_path)
+
+            # Construct the file path
+            embeddings_path = os.path.join(dir_path, self.config['data']['embeddings'])
+
+            # Save the embeddings to the specified path
+            np.save(embeddings_path, embeddings)
+        except OSError as e:
+            print(f"Error saving embeddings: {e}")
+            return None
+
+        return embeddings
+
+    def process_batches(self, doc_chunks):
         topic_models = []
 
-        # process in batches and merge models, otherwise runs out of GPU RAM
-        for batch_index, (batch_docs, batch_embeddings) in enumerate(
-                tqdm(zip(doc_chunks, embedding_chunks), total=len(doc_chunks), desc="Processing batches")):
-            topic_model = load_checkpoint(self.checkpoint_dir, batch_index)
+        # process in batches and merge models, if GPU RAM is an issue
+        for batch_index, batch_docs in enumerate(
+                tqdm(doc_chunks, total=len(doc_chunks), desc="Processing batches")):
+            try:
+                topic_model = load_checkpoint(self.checkpoint_dir, batch_index)
+
+            except Exception as e:
+                topic_model = None
+
             if topic_model is None:
+                # Compute embeddings for the current batch of documents
+                batch_embeddings = self.embedding_model.encode(batch_docs, show_progress_bar=True)
                 topic_model = self._create_topic_model()
-                topic_model.fit(batch_docs, embeddings=np.array(batch_embeddings))
+                topic_model.fit_transform(batch_docs, batch_embeddings)
                 save_checkpoint(topic_model, self.checkpoint_dir, batch_index)
             topic_models.append(topic_model)
 
@@ -86,9 +108,14 @@ A:
         )
 
     def merge_models(self, topic_models):
-        merged_model = BERTopic.merge_models(topic_models)
-        merged_model.save("merged_topic_model")
-        return merged_model
+        if len(topic_models) == 0:
+            return None
+        elif len(topic_models) == 1:
+            return topic_models[0]
+        else:
+            merged_model = BERTopic.merge_models(topic_models)
+            merged_model.save("merged_topic_model")
+            return merged_model
 
     def transform_documents(self, model, docs, embeddings):
         return model.transform(docs, embeddings=embeddings)

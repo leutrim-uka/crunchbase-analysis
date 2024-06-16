@@ -5,6 +5,7 @@ data:
 checkpoint:
   dir: "../checkpoints"
 model:
+  embedding_model: "BAAI/bge-small-en"
   batch_size: 1000
   umap:
     n_neighbors: 30

@@ -8,7 +8,6 @@ echo "Installing Python dependencies..."
 pip install -r requirements.txt
 
 # Install dependencies with specific commands
-pip install --no-cache-dir scikit-learn==1.5.0
 pip install --no-cache-dir cudf-cu12==24.6.0 dask-cudf-cu12==24.6.0 --extra-index-url=https://pypi.nvidia.com
 pip install --no-cache-dir cuml-cu12==24.6.0 --extra-index-url=https://pypi.nvidia.com
 pip install --no-cache-dir cugraph-cu12==24.6.0 --extra-index-url=https://pypi.nvidia.com
